@@ -5,6 +5,7 @@ import random
 from torch.distributions import Categorical
 import gym
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 class net(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -46,17 +47,20 @@ class reinforce(object):
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.learning_rate)
         self.total_returns = []
         self.weight_reward = None
+        self.writer = SummaryWriter('runs/reinforce')
+        self.count = 0
 
     def train(self, ):
-        loss_list = []
         total_returns = torch.FloatTensor(self.total_returns)
         eps = np.finfo(np.float32).eps.item()
         total_returns = (total_returns - total_returns.mean()) / (total_returns.std() + eps)
-        for log_prob, total_return in zip(self.net.log_probs, total_returns):
-            loss_list.append(- log_prob * total_return)
-        loss = torch.cat(loss_list, 0).sum()
+        log_probs = torch.cat(self.net.log_probs, 0)
+        loss = (- log_probs * total_returns)
+        loss = loss.sum()
+        self.writer.add_scalar('loss', loss, self.count)
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.1)
         self.optimizer.step()
 
     def run(self, ):
@@ -70,6 +74,7 @@ class reinforce(object):
                 next_obs, reward, done, info = self.env.step(action)
                 self.net.rewards.append(reward)
                 total_reward += reward
+                self.count += 1
                 if self.render:
                     self.env.render()
                 obs = next_obs
@@ -88,11 +93,13 @@ class reinforce(object):
                     del self.net.log_probs[:]
                     del self.total_returns[:]
                     print('episode: {}  reward: {:.1f}  weight_reward: {:.2f}'.format(i+1, total_reward, self.weight_reward))
+                    self.writer.add_scalar('reward', total_reward, i)
+                    self.writer.add_scalar('weight_reward', self.weight_reward, i)
                     break
 
 
 if __name__ == '__main__':
     env = gym.make('CartPole-v0')
     env = env.unwrapped
-    test = reinforce(env, gamma=0.99, learning_rate=1e-2, episode=100000, render=False)
+    test = reinforce(env, gamma=0.99, learning_rate=1e-3, episode=100000, render=False)
     test.run()
