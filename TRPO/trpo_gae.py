@@ -6,6 +6,7 @@ import numpy as np
 import gym
 from collections import deque
 import random
+from torch.utils.tensorboard import SummaryWriter
 
 
 class gae_trajectory_buffer(object):
@@ -66,9 +67,9 @@ class gaussian_policy_net(nn.Module):
         x = F.tanh(self.fc1(input))
         x = F.tanh(self.fc2(x))
         mu = self.fc3(x)
-        #sigma = torch.ones_like(mu)
-        log_sigma = torch.zeros_like(mu)
-        sigma = torch.exp(log_sigma)
+        sigma = torch.ones_like(mu)
+        #log_sigma = torch.zeros_like(mu)
+        #sigma = torch.exp(log_sigma)
         return mu, sigma
 
     def act(self, input):
@@ -93,14 +94,14 @@ class value_net(nn.Module):
         self.fc3 = nn.Linear(128, self.output_dim)
 
     def forward(self, input):
-        x = F.relu(self.fc1(input))
-        x = F.relu(self.fc2(x))
+        x = F.tanh(self.fc1(input))
+        x = F.tanh(self.fc2(x))
         x = self.fc3(x)
         return x
 
 
 class trpo(object):
-    def __init__(self, env, capacity, gamma, learning_rate, render, sample_size, episode, lam, delta, value_train_iter, policy_train_iter, method, backtrack_coeff, backtrack_alpha, training):
+    def __init__(self, env, capacity, gamma, learning_rate, render, sample_size, episode, lam, delta, value_train_iter, policy_train_iter, method, backtrack_coeff, backtrack_alpha, training, log):
         self.env = env
         self.gamma = gamma
         self.lam = lam
@@ -127,7 +128,10 @@ class trpo(object):
         self.old_policy_optimizer = torch.optim.Adam(self.old_policy_net.parameters(), lr=self.learning_rate)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
         self.count = 0
+        self.train_count = 0
         self.weight_reward = None
+        self.writer = SummaryWriter('runs/trpo_gae')
+        self.log = log
 
     def guassian_kl(self, old_policy, policy, obs):
         mu_old, sigma_old = old_policy.forward(obs)
@@ -163,13 +167,13 @@ class trpo(object):
 
         kl_grad_p = (kl_grad * p).sum()
         kl_hessian = torch.autograd.grad(kl_grad_p, self.policy_net.parameters())
-        kl_hessian = self.flatten_grad(kl_hessian)
+        kl_hessian = self.flatten_grad(kl_hessian, hessian=True)
         return kl_hessian + p * damping_coeff
 
     def conjugate_gradient(self, obs, b, cg_iters=10, eps=1e-8, residual_tol=1e-10):
         x = torch.zeros_like(b)
         r = b.clone()
-        p = b.clone()
+        p = r.clone()
         rTr = torch.dot(r, r)
 
         for _ in range(cg_iters):
@@ -197,6 +201,7 @@ class trpo(object):
             index += param_length
 
     def train(self):
+        self.train_count += 1
         obs, act, rew, do, val, ret, adv = self.buffer.get()
 
         obs = torch.FloatTensor(obs)
@@ -216,6 +221,8 @@ class trpo(object):
         ratio_old = torch.exp(log_prob - log_prob_old)
         policy_loss_old = (ratio_old * adv).mean()
         value_loss = (value - val).pow(2).mean()
+        self.writer.add_scalar('value_loss', value_loss, self.train_count)
+        self.writer.add_scalar('policy_loss_old', policy_loss_old, self.train_count)
 
         for _ in range(self.value_train_iter):
             self.value_optimizer.zero_grad()
@@ -255,11 +262,17 @@ class trpo(object):
                 kl = self.guassian_kl(self.old_policy_net, self.policy_net, obs)
 
                 if kl < self.delta and improve_condition > self.backtrack_alpha:
+                    self.writer.add_scalar('improve_condition', improve_condition, self.train_count)
+                    self.writer.add_scalar('kl', kl, self.train_count)
+                    self.writer.add_scalar('backtrack_coeff', self.backtrack_coeff, self.train_count)
                     break
                 else:
                     if i == self.policy_train_iter - 1:
                         params = self.flatten_param(self.old_policy_net.parameters())
                         self.update_model(self.policy_net, params)
+                        self.writer.add_scalar('improve_condition', improve_condition, self.train_count)
+                        self.writer.add_scalar('kl', kl, self.train_count)
+                        self.writer.add_scalar('backtrack_coeff', 0., self.train_count)
                 self.backtrack_coeff = self.backtrack_coeff * 0.5
             self.backtrack_coeff = 1.
 
@@ -270,10 +283,10 @@ class trpo(object):
             if self.render:
                 self.env.render()
             while True:
+                self.count += 1
                 if self.training:
                     action = self.policy_net.act(torch.FloatTensor(np.expand_dims(obs, 0)))
                     next_obs, reward, done, _ = self.env.step([action])
-                    self.count += 1
                     val = self.value_net.forward(torch.FloatTensor(np.expand_dims(obs, 0))).detach().item()
                     self.buffer.store(obs, action, reward, done, val)
                     if self.count % self.capacity == 0:
@@ -290,7 +303,10 @@ class trpo(object):
                         self.weight_reward = total_reward
                     else:
                         self.weight_reward = self.weight_reward * 0.99 + total_reward * 0.01
-                    print('episode: {}  reward: {:.2f}  weight_reward: {:.2f}'.format(i+1, total_reward, self.weight_reward))
+                    if self.log:
+                        self.writer.add_scalar('weight_reward', self.weight_reward, i + 1)
+                        self.writer.add_scalar('reward', total_reward, i + 1)
+                    print('episode: {}  reward: {:.2f}  weight_reward: {:.2f}  train_step: {}'.format(i + 1, total_reward, self.weight_reward, self.train_count))
                     break
 
 
@@ -302,7 +318,7 @@ if __name__ == '__main__':
                 learning_rate=1e-3,
                 render=False,
                 sample_size=64,
-                episode=10000,
+                episode=5000,
                 lam=0.97,
                 delta=1e-2,
                 value_train_iter=80,
@@ -310,5 +326,6 @@ if __name__ == '__main__':
                 method='trpo',
                 backtrack_coeff=1.,
                 backtrack_alpha=0.5,
-                training=True)
+                training=True,
+                log=True)
     test.run()
