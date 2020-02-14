@@ -9,8 +9,8 @@ import random
 
 
 class gae_trajectory_buffer(object):
-    def __init__(self, capcity, gamma, lam):
-        self.capacity = capcity
+    def __init__(self, capacity, gamma, lam):
+        self.capacity = capacity
         self.memory = deque(maxlen=self.capacity)
         # [observation, action, reward, done, value, return, advantage]
         self.gamma = gamma
@@ -28,7 +28,7 @@ class gae_trajectory_buffer(object):
             R = R * self.gamma * (1 - traj[3]) + traj[2]
             traj.append(R)
             delta = traj[2] + self.gamma * (1 - traj[3]) * Value_previous - traj[4]
-            Adv = delta + self.gamma * self.lam * Adv
+            Adv = delta + self.gamma * self.lam * Adv * (1 - traj[3])
             Value_previous = traj[4]
             traj.append(Adv)
 
@@ -38,8 +38,10 @@ class gae_trajectory_buffer(object):
         action = np.expand_dims(action, 1)
         reward = np.expand_dims(reward, 1)
         done = np.expand_dims(done, 1)
-        value = np.expand_dims(done, 1)
+        value = np.expand_dims(value, 1)
         ret = np.expand_dims(ret, 1)
+        advantage = np.array(advantage)
+        advantage = (advantage - advantage.mean()) / advantage.std()
         advantage = np.expand_dims(advantage, 1)
         return observation, action, reward, done, value, ret, advantage
 
@@ -61,15 +63,24 @@ class gaussian_policy_net(nn.Module):
         self.fc3 = nn.Linear(128, self.output_dim)
 
     def forward(self, input):
-        x = F.tanh(self.fc1(1))
-        x = F.tanh(self.fc2(2))
+        x = F.tanh(self.fc1(input))
+        x = F.tanh(self.fc2(x))
         mu = self.fc3(x)
-        sigma = torch.ones_like(mu)
+        #sigma = torch.ones_like(mu)
+        log_sigma = torch.zeros_like(mu)
+        sigma = torch.exp(log_sigma)
+        return mu, sigma
 
+    def act(self, input):
+        mu, sigma = self.forward(input)
         dist = Normal(mu, sigma)
-        pi = dist.sample().detach().item()
-        return mu, sigma, dist, pi
+        action = dist.sample().detach().item()
+        return action
 
+    def distribute(self, input):
+        mu, sigma = self.forward(input)
+        dist = Normal(mu, sigma)
+        return dist
 
 class value_net(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -82,8 +93,8 @@ class value_net(nn.Module):
         self.fc3 = nn.Linear(128, self.output_dim)
 
     def forward(self, input):
-        x = F.relu(self.fc1(1))
-        x = F.relu(self.fc2(2))
+        x = F.relu(self.fc1(input))
+        x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
 
@@ -107,7 +118,7 @@ class trpo(object):
         self.training = training
 
         self.observation_dim = self.env.observation_space.shape[0]
-        self.action_dim = self.env.action_space.n
+        self.action_dim = self.env.action_space.shape[0]
         self.policy_net = gaussian_policy_net(self.observation_dim, self.action_dim)
         self.old_policy_net = gaussian_policy_net(self.observation_dim, self.action_dim)
         self.value_net = value_net(self.observation_dim, 1)
@@ -116,9 +127,10 @@ class trpo(object):
         self.old_policy_optimizer = torch.optim.Adam(self.old_policy_net.parameters(), lr=self.learning_rate)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
         self.count = 0
+        self.weight_reward = None
 
     def guassian_kl(self, old_policy, policy, obs):
-        mu_old, sigma_old, _, _ = old_policy.forward(obs)
+        mu_old, sigma_old = old_policy.forward(obs)
         mu_old, sigma_old = mu_old.detach(), sigma_old.detach()
 
         mu, sigma = policy.forward(obs)
@@ -146,11 +158,11 @@ class trpo(object):
 
     def hessian_vector_product(self, obs, p, damping_coeff=0.1):
         kl = self.guassian_kl(self.old_policy_net, self.policy_net, obs)
-        kl_grad = torch.autograd.grad(kl, self.policy_net.parameters(), retain_graph=True)
+        kl_grad = torch.autograd.grad(kl, self.policy_net.parameters(), create_graph=True)
         kl_grad = self.flatten_grad(kl_grad)
 
         kl_grad_p = (kl_grad * p).sum()
-        kl_hessian = torch.autograd.grad(kl_grad_p, self.value_net.parameters())
+        kl_hessian = torch.autograd.grad(kl_grad_p, self.policy_net.parameters())
         kl_hessian = self.flatten_grad(kl_hessian)
         return kl_hessian + p * damping_coeff
 
@@ -188,22 +200,22 @@ class trpo(object):
         obs, act, rew, do, val, ret, adv = self.buffer.get()
 
         obs = torch.FloatTensor(obs)
-        act = torch.LongTensor(act)
+        act = torch.FloatTensor(act)
         rew = torch.FloatTensor(rew)
         do = torch.FloatTensor(do)
         val = torch.FloatTensor(val)
         ret = torch.FloatTensor(ret)
         adv = torch.FloatTensor(adv)
 
-        _, _, dist_old, _ = self.policy_net.forward(obs)
+        dist_old = self.policy_net.distribute(obs)
         log_prob_old = dist_old.log_prob(act).detach()
-        _, _, dist, _ = self.policy_net.forward(obs)
+        dist = self.policy_net.distribute(obs)
         log_prob = dist.log_prob(act)
         value = self.value_net.forward(obs)
 
         ratio_old = torch.exp(log_prob - log_prob_old)
         policy_loss_old = (ratio_old * adv).mean()
-        value_loss = (value - val).pow().mean()
+        value_loss = (value - val).pow(2).mean()
 
         for _ in range(self.value_train_iter):
             self.value_optimizer.zero_grad()
@@ -226,13 +238,13 @@ class trpo(object):
 
         elif self.method == 'trpo':
             full_improve = (gradient * step_size * search_dir).sum(0, keepdim=True)
-            _, _, dist_old, _ = self.old_policy_net.forward(obs)
+            dist_old = self.old_policy_net.distribute(obs)
 
             for i in range(self.policy_train_iter):
-                params = old_params + alpha * step_size * search_dir
+                params = old_params + self.backtrack_coeff * step_size * search_dir
                 self.update_model(self.policy_net, params)
 
-                _, _, dist, _ = self.policy_net.forward(obs)
+                dist = self.policy_net.distribute(obs)
                 log_prob = dist.log_prob(act)
                 ratio = torch.exp(log_prob - log_prob_old)
                 policy_loss = (ratio * adv).mean()
@@ -246,9 +258,10 @@ class trpo(object):
                     break
                 else:
                     if i == self.policy_train_iter - 1:
-                        params = self.flatten_param(self.old_policy_net)
+                        params = self.flatten_param(self.old_policy_net.parameters())
                         self.update_model(self.policy_net, params)
                 self.backtrack_coeff = self.backtrack_coeff * 0.5
+            self.backtrack_coeff = 1.
 
     def run(self):
         for i in range(self.episode):
@@ -258,18 +271,44 @@ class trpo(object):
                 self.env.render()
             while True:
                 if self.training:
-                    _, _, _, action = self.policy_net.forward(torch.FloatTensor(np.expand_dims(obs)))
-                    next_obs, reward, done, _ = self.env.step(action)
+                    action = self.policy_net.act(torch.FloatTensor(np.expand_dims(obs, 0)))
+                    next_obs, reward, done, _ = self.env.step([action])
                     self.count += 1
-                    val = self.value_net.forward(torch.FloatTensor(np.expand_dims(obs))).detach().item()
+                    val = self.value_net.forward(torch.FloatTensor(np.expand_dims(obs, 0))).detach().item()
                     self.buffer.store(obs, action, reward, done, val)
                     if self.count % self.capacity == 0:
                         self.buffer.process()
                         self.train()
                 else:
-                    action, _, _, _ = self.policy_net.forward(torch.FloatTensor(np.expand_dims(obs)))
+                    action = self.policy_net.act(torch.FloatTensor(np.expand_dims(obs)))
                     next_obs, reward, done, _ = self.env.step(action)
 
                 total_reward += reward
                 obs = next_obs
+                if done:
+                    if not self.weight_reward:
+                        self.weight_reward = total_reward
+                    else:
+                        self.weight_reward = self.weight_reward * 0.99 + total_reward * 0.01
+                    print('episode: {}  reward: {:.2f}  weight_reward: {:.2f}'.format(i+1, total_reward, self.weight_reward))
+                    break
 
+
+if __name__ == '__main__':
+    env = gym.make('Pendulum-v0')
+    test = trpo(env=env,
+                capacity=2000,
+                gamma=0.99,
+                learning_rate=1e-3,
+                render=False,
+                sample_size=64,
+                episode=10000,
+                lam=0.97,
+                delta=1e-2,
+                value_train_iter=80,
+                policy_train_iter=10,
+                method='trpo',
+                backtrack_coeff=1.,
+                backtrack_alpha=0.5,
+                training=True)
+    test.run()
