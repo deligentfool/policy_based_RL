@@ -13,7 +13,7 @@ class gae_trajectory_buffer(object):
     def __init__(self, capacity, gamma, lam):
         self.capacity = capacity
         self.memory = deque(maxlen=self.capacity)
-        # [observation, action, reward, done, value, return, advantage]
+        # * [observation, action, reward, done, value, return, advantage]
         self.gamma = gamma
         self.lam = lam
 
@@ -28,6 +28,7 @@ class gae_trajectory_buffer(object):
         for traj in reversed(list(self.memory)):
             R = R * self.gamma * (1 - traj[3]) + traj[2]
             traj.append(R)
+            # * the generalized advantage estimator(GAE)
             delta = traj[2] + self.gamma * (1 - traj[3]) * Value_previous - traj[4]
             Adv = delta + self.gamma * self.lam * Adv * (1 - traj[3])
             Value_previous = traj[4]
@@ -134,6 +135,7 @@ class trpo(object):
         self.log = log
 
     def guassian_kl(self, old_policy, policy, obs):
+        # * calculate the guassian distribution kl
         mu_old, sigma_old = old_policy.forward(obs)
         mu_old, sigma_old = mu_old.detach(), sigma_old.detach()
 
@@ -161,6 +163,9 @@ class trpo(object):
         return torch.cat(param_flat, 0).detach()
 
     def hessian_vector_product(self, obs, p, damping_coeff=0.1):
+        # * calculate the production of hessian matrix with a vector
+        # * obs : observation
+        # * p : a vector
         kl = self.guassian_kl(self.old_policy_net, self.policy_net, obs)
         kl_grad = torch.autograd.grad(kl, self.policy_net.parameters(), create_graph=True)
         kl_grad = self.flatten_grad(kl_grad)
@@ -171,6 +176,9 @@ class trpo(object):
         return kl_hessian + p * damping_coeff
 
     def conjugate_gradient(self, obs, b, cg_iters=10, eps=1e-8, residual_tol=1e-10):
+        # * calculate the search direction with conjugate gradient method, find the x that makes hx = g
+        # * obs : observation
+        # * b : gradient
         x = torch.zeros_like(b)
         r = b.clone()
         p = r.clone()
@@ -220,7 +228,7 @@ class trpo(object):
 
         ratio_old = torch.exp(log_prob - log_prob_old)
         policy_loss_old = (ratio_old * adv).mean()
-        value_loss = (value - val).pow(2).mean()
+        value_loss = (value - ret).pow(2).mean()
         self.writer.add_scalar('value_loss', value_loss, self.train_count)
         self.writer.add_scalar('policy_loss_old', policy_loss_old, self.train_count)
 
@@ -233,7 +241,7 @@ class trpo(object):
         gradient = self.flatten_grad(gradient)
 
         search_dir = self.conjugate_gradient(obs, gradient)
-        # search_dir is x in paper
+        # * search_dir is x in paper
         xhx = torch.dot(self.hessian_vector_product(obs, search_dir), search_dir)
         step_size = torch.sqrt((2. * self.delta) / xhx)
         old_params = self.flatten_param(self.policy_net.parameters())
@@ -327,5 +335,5 @@ if __name__ == '__main__':
                 backtrack_coeff=1.,
                 backtrack_alpha=0.5,
                 training=True,
-                log=True)
+                log=False)
     test.run()
