@@ -121,7 +121,7 @@ class ppo_clip(object):
         self.count = 0
         self.train_count = 0
         self.weight_reward = None
-        self.writer = SummaryWriter('runs/ppo_cartpole')
+        self.writer = SummaryWriter('runs/ppo_clip_pendulum')
 
     def train(self):
         obs, act, rew, don, val, ret, adv = self.buffer.get()
