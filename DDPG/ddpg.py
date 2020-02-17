@@ -29,6 +29,7 @@ class replay_buffer(object):
 
 
 class policy_net(nn.Module):
+    # * deterministic actor network, output a deterministic value as the selected action
     def __init__(self, input_dim, output_dim):
         super(policy_net, self).__init__()
         self.input_dim = input_dim
@@ -41,21 +42,13 @@ class policy_net(nn.Module):
     def forward(self, input):
         x = F.relu(self.fc1(input))
         x = F.relu(self.fc2(x))
-        mu = self.fc3(x)
-        return mu
+        x = self.fc3(x)
+        return x
 
     def act(self, input):
-        mu = self.forward(input)
-        sigma = torch.ones_like(mu)
-        dist = Normal(mu, sigma)
-        action = dist.sample().detach().item()
+        action = self.forward(input).detach().item()
         return action
 
-    def get_distribution(self):
-        mu = self.forward(input)
-        sigma = torch.ones_like(mu)
-        dist = Normal(mu, sigma)
-        return dist
 
 
 class value_net(nn.Module):
