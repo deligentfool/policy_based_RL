@@ -59,12 +59,13 @@ class policy_net(nn.Module):
 
 
 class value_net(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input1_dim, input2_dim, output_dim):
         super(value_net, self).__init__()
-        self.input_dim = input_dim
+        self.input1_dim = input1_dim
+        self.input2_dim = input2_dim
         self.output_dim = output_dim
 
-        self.fc1 = nn.Linear(self.input_dim, 128)
+        self.fc1 = nn.Linear(self.input1_dim + self.input2_dim, 128)
         self.fc2 = nn.Linear(128, 128)
         self.fc3 = nn.Linear(128, self.output_dim)
 
@@ -100,8 +101,8 @@ class ddpg(object):
         self.action_dim = self.env.action_space.shape[0]
         self.policy_net = policy_net(self.observation_dim, self.action_dim)
         self.target_policy_net = policy_net(self.observation_dim, self.action_dim)
-        self.value_net = value_net(self.observation_dim + self.action_dim, 1)
-        self.target_value_net = value_net(self.observation_dim + self.action_dim, 1)
+        self.value_net = value_net(self.observation_dim, self.action_dim, 1)
+        self.target_value_net = value_net(self.observation_dim, self.action_dim, 1)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
         self.value_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=self.learning_rate)
         self.target_policy_net.load_state_dict(self.policy_net.state_dict())
