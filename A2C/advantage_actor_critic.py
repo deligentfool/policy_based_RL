@@ -80,7 +80,7 @@ class advantage_actor_critic(object):
         next_observation = torch.FloatTensor(self.next_observation_buffer)
 
         delta = rewards + self.value_net.forward(next_observation) - values
-        policy_loss = (- delta * log_probs).sum()
+        policy_loss = (- delta.detach() * log_probs).sum()
         self.writer.add_scalar('policy_loss', policy_loss, self.count)
         self.policy_optimizer.zero_grad()
         policy_loss.backward(retain_graph=True)
