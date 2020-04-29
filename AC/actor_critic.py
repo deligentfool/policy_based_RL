@@ -82,7 +82,7 @@ class actor_critic(object):
         rewards = torch.FloatTensor(self.policy_net.rewards).unsqueeze(1)
         next_observation = torch.FloatTensor(self.next_observation_buffer)
 
-        policy_loss = (- log_probs * values)
+        policy_loss = (- log_probs * values.detach())
         policy_loss = policy_loss.sum()
         self.writer.add_scalar('policy_loss', policy_loss, self.count)
         self.policy_optimizer.zero_grad()
