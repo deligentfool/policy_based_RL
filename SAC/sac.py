@@ -20,7 +20,7 @@ class normallized_action_wrapper(gym.ActionWrapper):
         action = np.clip(action, low, high)
         return action
 
-    def reverse_action(self):
+    def reverse_action(self, action):
         # * change action range from [env.low, env.high] to [-1, 1]
         low = self.action_space.low
         high = self.action_space.high

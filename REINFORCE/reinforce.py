@@ -55,7 +55,7 @@ class reinforce(object):
         eps = np.finfo(np.float32).eps.item()
         total_returns = (total_returns - total_returns.mean()) / (total_returns.std() + eps)
         log_probs = torch.cat(self.net.log_probs, 0)
-        loss = (- log_probs * total_returns)
+        loss = (- log_probs * total_returns.detach())
         loss = loss.sum()
         self.writer.add_scalar('loss', loss, self.count)
         self.optimizer.zero_grad()

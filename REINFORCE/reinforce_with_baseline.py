@@ -82,7 +82,7 @@ class reinforce_with_baseline(object):
         delta = (total_returns - values).squeeze(1)
         log_probs = torch.cat(self.policy_net.log_probs, 0)
 
-        policy_loss = (- log_probs * delta)
+        policy_loss = (- log_probs * delta.detach())
         policy_loss = policy_loss.sum()
         self.writer.add_scalar('policy_loss', policy_loss, self.count)
         self.policy_optimizer.zero_grad()
