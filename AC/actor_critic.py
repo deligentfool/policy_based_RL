@@ -136,7 +136,6 @@ class actor_critic(object):
                         self.weight_reward = 0.99 * self.weight_reward + 0.01 * total_reward
                     else:
                         self.weight_reward = total_reward
-                    R = 0
                     self.train()
                     del self.policy_net.rewards[:]
                     del self.policy_net.log_probs[:]

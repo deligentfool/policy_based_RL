@@ -9,45 +9,30 @@ from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 
-class gae_trajectory_buffer(object):
-    def __init__(self, capacity, gamma, lam):
+class trajectory_buffer(object):
+    def __init__(self, capacity):
         self.capacity = capacity
-        self.gamma = gamma
-        self.lam = lam
         self.memory = deque(maxlen=self.capacity)
-        # * [obs, act, rew, don, val, ret, adv]
+        # * [obs, next_obs, act, rew, don, val]
 
-    def store(self, obs, act, rew, don, val):
+    def store(self, obs, next_obs, act, rew, don, val):
         obs = np.expand_dims(obs, 0)
-        self.memory.append([obs, act, rew, don, val])
-
-    def process(self):
-        R = 0
-        Adv = 0
-        Value_previous = 0
-        for traj in reversed(list(self.memory)):
-            R = self.gamma * R * (1 - traj[3]) + traj[4]
-            traj.append(R)
-            # * the generalized advantage estimator(GAE)
-            delta = traj[2] + Value_previous * self.gamma * (1 - traj[3]) - traj[4]
-            Adv = delta + (1 - traj[3]) * Adv * self.gamma * self.lam
-            traj.append(Adv)
-            Value_previous = traj[4]
+        next_obs = np.expand_dims(next_obs, 0)
+        self.memory.append([obs, next_obs, act, rew, don, val])
 
     def get(self):
-        obs, act, rew, don, val, ret, adv = zip(* self.memory)
+        obs, next_obs, act, rew, don, val = zip(* self.memory)
         act = np.expand_dims(act, 1)
         rew = np.expand_dims(rew, 1)
         don = np.expand_dims(don, 1)
         val = np.expand_dims(val, 1)
-        ret = np.expand_dims(ret, 1)
-        adv = np.array(adv)
-        adv = (adv - adv.mean()) / adv.std()
-        adv = np.expand_dims(adv, 1)
-        return np.concatenate(obs, 0), act, rew, don, val, ret, adv
+        return np.concatenate(obs, 0), np.concatenate(next_obs, 0), act, rew, don, val
 
     def __len__(self):
         return len(self.memory)
+
+    def clear(self):
+        self.memory.clear()
 
 
 class policy_net(nn.Module):
@@ -111,29 +96,43 @@ class ppo_clip(object):
         self.value_net = value_net(self.observation_dim, 1)
         self.value_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=self.learning_rate)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
-        self.buffer = gae_trajectory_buffer(capacity=self.capacity, gamma=self.gamma, lam=self.lam)
+        self.buffer = trajectory_buffer(capacity=self.capacity)
         self.count = 0
         self.train_count = 0
         self.weight_reward = None
         self.writer = SummaryWriter('runs/ppo_clip_cartpole')
 
     def train(self):
-        obs, act, rew, don, val, ret, adv = self.buffer.get()
+        obs, next_obs, act, rew, don, val = self.buffer.get()
 
         obs = torch.FloatTensor(obs)
+        next_obs = torch.FloatTensor(next_obs)
         act = torch.LongTensor(act)
         rew = torch.FloatTensor(rew)
         don = torch.FloatTensor(don)
         val = torch.FloatTensor(val)
-        ret = torch.FloatTensor(ret)
-        adv = torch.FloatTensor(adv).squeeze(1)
 
         old_probs = self.policy_net.forward(obs)
         old_probs = old_probs.gather(1, act).squeeze(1).detach()
         value_loss_buffer = []
+        policy_loss_buffer = []
         for _ in range(self.value_update_iter):
+            td_target = rew + self.gamma * self.value_net.forward(next_obs) * (1 - don)
+            delta = td_target - self.value_net.forward(obs)
+            delta = delta.detach().numpy()
+
+            advantage_lst = []
+            advantage = 0.0
+            for delta_t in delta[::-1]:
+                advantage = self.gamma * self.lam * advantage + delta_t[0]
+                advantage_lst.append([advantage])
+
+            advantage_lst.reverse()
+            advantage = torch.FloatTensor(advantage_lst)
+
             value = self.value_net.forward(obs)
-            value_loss = (ret - value).pow(2).mean()
+            #value_loss = (ret - value).pow(2).mean()
+            value_loss = F.smooth_l1_loss(td_target.detach(), value)
             value_loss_buffer.append(value_loss.item())
             self.value_optimizer.zero_grad()
             value_loss.backward()
@@ -141,13 +140,11 @@ class ppo_clip(object):
             if self.log:
                 self.writer.add_scalar('value_loss', np.mean(value_loss_buffer), self.train_count)
 
-        policy_loss_buffer = []
-        for _ in range(self.policy_update_iter):
             probs = self.policy_net.forward(obs)
             probs = probs.gather(1, act).squeeze(1)
             ratio = probs / old_probs
-            surr1 = ratio * adv
-            surr2 = torch.clamp(ratio, 1. - self.epsilon, 1. + self.epsilon) * adv
+            surr1 = ratio * advantage
+            surr2 = torch.clamp(ratio, 1. - self.epsilon, 1. + self.epsilon) * advantage
             policy_loss = - torch.min(surr1, surr2).mean()
             policy_loss_buffer.append(policy_loss.item())
             self.policy_optimizer.zero_grad()
@@ -168,14 +165,14 @@ class ppo_clip(object):
                 if self.render:
                     self.env.render()
                 value = self.value_net.forward(torch.FloatTensor(np.expand_dims(obs, 0))).detach().item()
-                self.buffer.store(obs, action, reward, done, value)
+                self.buffer.store(obs, next_obs, action, reward, done, value)
                 self.count += 1
                 total_reward += reward
                 obs = next_obs
-                if self.count % self.capacity == 0:
-                    self.buffer.process()
+                if self.count % 20 == 0:
                     self.train_count += 1
                     self.train()
+                    self.buffer.clear()
                 if done:
                     if not self.weight_reward:
                         self.weight_reward = total_reward
@@ -189,16 +186,16 @@ class ppo_clip(object):
 
 
 if __name__ == '__main__':
-    env = gym.make('CartPole-v0')
+    env = gym.make('CartPole-v1').unwrapped
     test = ppo_clip(env=env,
                     episode=10000,
                     learning_rate=1e-3,
                     gamma=0.99,
-                    lam=0.97,
-                    epsilon=0.2,
+                    lam=0.95,
+                    epsilon=0.1,
                     capacity=2000,
                     render=False,
                     log=False,
-                    value_update_iter=10,
-                    policy_update_iter=10)
+                    value_update_iter=3,
+                    policy_update_iter=3)
     test.run()

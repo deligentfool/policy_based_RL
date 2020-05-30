@@ -15,7 +15,7 @@ class gae_trajectory_buffer(object):
         self.gamma = gamma
         self.lam = lam
         self.memory = deque(maxlen=self.capacity)
-        # * [obs, act, rew, don, val, ret, adv]
+        # * [obs, act, next_obs, rew, don, val, ret, adv]
 
     def store(self, obs, act, rew, don, val, next_obs):
         obs = np.expand_dims(obs, 0)
@@ -49,6 +49,9 @@ class gae_trajectory_buffer(object):
 
     def __len__(self):
         return len(self.memory)
+
+    def clear(self):
+        self.memory.clear()
 
 
 class policy_net(nn.Module):
@@ -212,7 +215,8 @@ class icm_ppo(object):
         value_loss_buffer = []
         for _ in range(self.value_update_iter):
             value = self.value_net.forward(obs)
-            value_loss = (ret - value).pow(2).mean()
+            td_target = rew + self.gamma * self.value_net.forward(next_obs) * (1 - don)
+            value_loss = F.smooth_l1_loss(td_target.detach(), value)
             value_loss_buffer.append(value_loss.item())
             self.value_optimizer.zero_grad()
             value_loss.backward()
@@ -259,15 +263,17 @@ class icm_ppo(object):
                 action_one_hot[0, action] = 1
                 action_one_hot = torch.FloatTensor(action_one_hot)
                 intrinsic_reward = self.intrinsic_weight * self.icm_net.intrinsic_reward(torch.FloatTensor(np.expand_dims(obs, 0)), action_one_hot, torch.FloatTensor(np.expand_dims(next_obs, 0)))
-                reward = intrinsic_reward + reward
-                self.buffer.store(obs, action, reward, done, value, next_obs)
+                reward = max(intrinsic_reward, 0.1) + reward
+                self.buffer.store(obs, action, reward / 100., done, value, next_obs)
                 self.count += 1
                 total_reward += reward
                 obs = next_obs
-                if self.count % self.capacity == 0:
+                #if self.count % self.capacity == 0:
+                if done:
                     self.buffer.process()
                     self.train_count += 1
                     self.train()
+                    self.buffer.clear()
                 if done:
                     if not self.weight_reward:
                         self.weight_reward = total_reward
@@ -281,7 +287,7 @@ class icm_ppo(object):
 
 
 if __name__ == '__main__':
-    env = gym.make('CartPole-v0')
+    env = gym.make('CartPole-v0').unwrapped
     test = icm_ppo(
         env=env,
         episode=10000,
@@ -289,13 +295,13 @@ if __name__ == '__main__':
         gamma=0.99,
         lam=0.97,
         epsilon=0.2,
-        capacity=2000,
+        capacity=20000,
         render=False,
         log=False,
-        value_update_iter=10,
-        policy_update_iter=10,
+        value_update_iter=3,
+        policy_update_iter=3,
         state_dim=256,
         reset_time=2,
-        intrinsic_weight=1e-2
+        intrinsic_weight=1e-6
     )
     test.run()

@@ -170,7 +170,7 @@ class acer(object):
                 if self.render:
                     self.env.render()
                 policy = policy.detach().numpy()
-                self.buffer.store(obs, action, reward, policy, done)
+                self.buffer.store(obs, action, reward / 10., policy, done)
                 obs = next_obs
 
                 if done:
@@ -198,7 +198,7 @@ if __name__ == '__main__':
                 capacity=10000,
                 learning_rate=1e-3,
                 exploration=1000,
-                c=10.,
+                c=1.,
                 gamma=0.99,
                 batch_size=16,
                 entropy_weight=1e-4,
