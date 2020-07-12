@@ -105,14 +105,22 @@ class value_net(nn.Module):
 
 
 class sac(object):
-    def __init__(self, env, batch_size, learning_rate, exploration, episode, gamma, alpha, capacity, rho, update_iter, update_every, render, log):
+    def __init__(self, env, batch_size, learning_rate, exploration, episode, gamma, alpha, auto_entropy_tuning, capacity, rho, update_iter, update_every, render, log):
         self.env = env
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.exploration = exploration
         self.episode = episode
         self.gamma = gamma
-        self.alpha = alpha
+        self.auto_entropy_tuning = auto_entropy_tuning
+        if not self.auto_entropy_tuning:
+            self.alpha = alpha
+        else:
+            # * the automatic temperature alpha tuning mechanism
+            self.log_alpha = torch.zeros(1, requires_grad=True)
+            self.alpha = self.log_alpha.exp()
+            self.target_entropy = - torch.prod(torch.FloatTensor(self.env.action_space.shape)).item()
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.learning_rate, eps=1e-4)
         self.capacity = capacity
         self.rho = rho
         self.update_iter = update_iter
@@ -196,6 +204,14 @@ class sac(object):
             nn.utils.clip_grad_norm_(self.policy_net.parameters(), 0.5)
             self.policy_optimizer.step()
 
+            if self.auto_entropy_tuning:
+                self.alpha_optimizer.zero_grad()
+                entropy_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
+                entropy_loss.backward()
+                self.alpha_optimizer.step()
+
+                self.alpha = self.log_alpha.exp()
+
             self.soft_update()
         if self.log:
             self.writer.add_scalar('value_loss1', np.mean(value_loss1_buffer), self.train_count)
@@ -245,7 +261,8 @@ if __name__ == '__main__':
                exploration=300,
                episode=10000,
                gamma=0.99,
-               alpha=0.2,
+               alpha=None,
+               auto_entropy_tuning=True,
                capacity=1000000,
                rho=0.995,
                update_iter=10,
