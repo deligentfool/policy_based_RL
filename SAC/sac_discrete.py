@@ -217,17 +217,17 @@ if __name__ == '__main__':
     env = gym.make('CartPole-v1').unwrapped
     test = sac_discrete(
         env=env,
-        batch_size=100,
-        learning_rate=1e-4,
-        exploration=300,
+        batch_size=64,
+        learning_rate=3e-4,
+        exploration=3000,
         episode=10000,
         gamma=0.99,
         alpha=None,
         auto_entropy_tuning=True,
-        capacity=1000000,
+        capacity=100000,
         rho=0.995,
-        update_iter=10,
-        update_every=50,
+        update_iter=3,
+        update_every=5,
         render=False,
         log=False
     )
