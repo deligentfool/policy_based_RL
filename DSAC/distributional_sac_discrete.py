@@ -231,6 +231,7 @@ class sac_discrete(object):
             dist1 = dist1.gather(1, action.unsqueeze(-1).expand(self.batch_size, 1, dist1.size(2))).squeeze()
             # * use tau_hat to calculate the quantile value
             target_next_state_embedding1 = self.target_value_net1.calc_state_embedding(next_observation)
+            # * double q
             eval_next_state_embedding1 = self.value_net1.calc_state_embedding(next_observation)
             next_tau1, next_tau_hat1, _ = self.value_net1.calc_quantile_fraction(eval_next_state_embedding1.detach())
             target_action1 = self.value_net1.calc_q_value(eval_next_state_embedding1, next_tau1, next_tau_hat1).max(1)[1].detach()
